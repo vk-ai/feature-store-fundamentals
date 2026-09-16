@@ -67,7 +67,7 @@ feature_store/     # schema, offline, online, store, cli
 schemas/           # example feature-view JSON
 examples/          # sample CSV
 tests/             # pytest
-.github/workflows/ # CI
+ci/github-actions.yml  # CI workflow mirror (copy to .github/workflows/ci.yml if token has workflow scope)
 ```
 
 ## Design notes (learning)
@@ -78,6 +78,10 @@ tests/             # pytest
 4. **Schema versions** let you evolve feature views without silently mixing incompatible payloads; mismatches raise `SchemaMismatchError`.
 
 This mirrors ideas popularized by Feast and similar stores, stripped down for teaching.
+
+## CI
+
+A GitHub Actions workflow is checked in as [`ci/github-actions.yml`](ci/github-actions.yml) (mirror). Enabling it under `.github/workflows/` requires a token with the `workflow` scope.
 
 ## License
 
