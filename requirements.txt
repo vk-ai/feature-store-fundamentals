@@ -1,0 +1,3 @@
+# Runtime: stdlib only (sqlite3, csv, json, pathlib)
+# Dev / CI
+pytest>=7.0,<9

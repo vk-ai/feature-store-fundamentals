@@ -1,0 +1,12 @@
+{
+  "name": "user_features",
+  "version": "1",
+  "entity_key": "user_id",
+  "features": ["avg_order_value", "orders_30d", "is_premium"],
+  "dtypes": {
+    "avg_order_value": "float",
+    "orders_30d": "int",
+    "is_premium": "bool"
+  },
+  "description": "Example user behavioral features for learning demos"
+}

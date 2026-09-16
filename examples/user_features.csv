@@ -1,0 +1,5 @@
+user_id,avg_order_value,orders_30d,is_premium
+u1,42.5,3,true
+u2,19.0,1,false
+u3,87.25,8,true
+u4,5.5,0,false
