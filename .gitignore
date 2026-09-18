@@ -17,4 +17,3 @@ data/online/
 data/offline/*.db
 !data/offline/.gitkeep
 data/
-.github/
