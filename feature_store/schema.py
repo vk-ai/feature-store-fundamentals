@@ -22,12 +22,22 @@ class FeatureSchema:
     features: tuple[str, ...]
     dtypes: dict[str, str] = field(default_factory=dict)
     description: str = ""
+    # Toy online TTL (seconds). None = never expire on read.
+    # Teaching stub only — not Feast FeatureView.ttl / Redis EXPIRE semantics.
+    online_ttl_seconds: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        # Omit null TTL so older schema JSON stays minimal
+        if data.get("online_ttl_seconds") is None:
+            data.pop("online_ttl_seconds", None)
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> FeatureSchema:
+        ttl = data.get("online_ttl_seconds", None)
+        if ttl is not None:
+            ttl = int(ttl)
         return cls(
             name=data["name"],
             version=str(data["version"]),
@@ -35,6 +45,7 @@ class FeatureSchema:
             features=tuple(data["features"]),
             dtypes=dict(data.get("dtypes") or {}),
             description=str(data.get("description") or ""),
+            online_ttl_seconds=ttl,
         )
 
     def save(self, path: Path | str) -> Path:

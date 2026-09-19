@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -26,12 +27,13 @@ def store(tmp_path: Path) -> FeatureStore:
 
 def test_get_online_features_lookup(store: FeatureStore) -> None:
     result = store.get_online_features("user_features", "1", ["u1", "u2", "missing"])
-    assert result["u1"] is not None
-    assert result["u1"]["avg_order_value"] == 42.5
-    assert result["u1"]["orders_30d"] == 3
-    assert result["u1"]["is_premium"] is True
-    assert result["u2"]["is_premium"] is False
-    assert result["missing"] is None
+    assert result.expired == 0
+    assert result.features["u1"] is not None
+    assert result.features["u1"]["avg_order_value"] == 42.5
+    assert result.features["u1"]["orders_30d"] == 3
+    assert result.features["u1"]["is_premium"] is True
+    assert result.features["u2"]["is_premium"] is False
+    assert result.features["missing"] is None
 
 
 def test_materialize_count(store: FeatureStore) -> None:

@@ -24,6 +24,7 @@ def cmd_register(args: argparse.Namespace) -> int:
         features=tuple(args.features),
         dtypes=dict(zip(args.features, args.dtypes)) if args.dtypes else {},
         description=args.description or "",
+        online_ttl_seconds=args.online_ttl_seconds,
     )
     path = store.register_schema(schema, overwrite=args.overwrite)
     print(f"Registered {schema.name}@{schema.version} -> {path}")
@@ -51,7 +52,7 @@ def cmd_get(args: argparse.Namespace) -> int:
     except SchemaMismatchError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
-    print(json.dumps(result, indent=2, default=str))
+    print(json.dumps(result.to_dict(), indent=2, default=str))
     return 0
 
 
@@ -82,6 +83,12 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--features", nargs="+", required=True)
     r.add_argument("--dtypes", nargs="*", default=None, help="Optional dtypes aligned to --features")
     r.add_argument("--description", default="")
+    r.add_argument(
+        "--online-ttl-seconds",
+        type=int,
+        default=None,
+        help="Optional toy online TTL (expire-on-read); not Feast/Redis TTL",
+    )
     r.add_argument("--overwrite", action="store_true")
     r.set_defaults(func=cmd_register)
 
