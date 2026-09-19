@@ -2,12 +2,25 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from feature_store.offline import OfflineStore
-from feature_store.online import OnlineStore
+from feature_store.online import OnlineStore, _utcnow
 from feature_store.schema import FeatureSchema, SchemaMismatchError, SchemaRegistry
+
+
+@dataclass
+class OnlineFeaturesResult:
+    """Online lookup result including toy TTL expiry stats."""
+
+    features: dict[str, dict[str, Any] | None]
+    expired: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"features": self.features, "expired": self.expired}
 
 
 class FeatureStore:
@@ -34,13 +47,23 @@ class FeatureStore:
         schema = self.schemas.get(name, version)
         return self.offline.ingest_csv(schema, csv_path)
 
-    def materialize(self, name: str, version: str) -> int:
-        """Copy offline rows into the online store for low-latency lookup."""
+    def materialize(
+        self,
+        name: str,
+        version: str,
+        *,
+        materialized_at: str | None = None,
+    ) -> int:
+        """Copy offline rows into the online store for low-latency lookup.
+
+        Each online row is stamped with ``materialized_at`` (ISO UTC) for toy TTL.
+        """
         schema = self.schemas.get(name, version)
         self.online.clear(schema)
+        stamp = materialized_at or _utcnow().isoformat()
         count = 0
         for entity_id, features in self.offline.iter_entity_features(schema):
-            self.online.put(schema, entity_id, features)
+            self.online.put(schema, entity_id, features, materialized_at=stamp)
             count += 1
         return count
 
@@ -51,10 +74,12 @@ class FeatureStore:
         entity_ids: list[str],
         *,
         expected_schema: FeatureSchema | None = None,
-    ) -> dict[str, dict[str, Any] | None]:
-        """Look up features for entities; raise on version / shape mismatch."""
+        now: datetime | None = None,
+    ) -> OnlineFeaturesResult:
+        """Look up features for entities; drop TTL-expired rows; raise on mismatch."""
         schema = self.schemas.require(name, version, expected=expected_schema)
-        return self.online.get(schema, entity_ids)
+        features, expired = self.online.get(schema, entity_ids, now=now)
+        return OnlineFeaturesResult(features=features, expired=expired)
 
     def list_schemas(self, name: str | None = None) -> list[FeatureSchema]:
         return self.schemas.list_versions(name)

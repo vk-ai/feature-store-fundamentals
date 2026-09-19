@@ -11,7 +11,8 @@ A minimal, CPU-only Python package (stdlib runtime: `sqlite3`, `csv`, `json`) th
 | Offline feature table | CSV ingest → SQLite offline tables |
 | Online lookup | In-memory dict + optional SQLite, keyed by `(feature_view, version, entity_id)` |
 | Schema versioning | Feature-view schemas as JSON (`name` + `version` + feature list / dtypes) |
-| Materialization | `materialize` copies offline → online |
+| Materialization | `materialize` copies offline → online (stamps `materialized_at`) |
+| Toy online TTL | Optional `online_ttl_seconds`; expire-on-read + `expired` count |
 | Serving API / CLI | `get_online_features` / `feature-store get-online-features` |
 
 No Feast dependency, no GPU, no heavy ML stack.
@@ -49,7 +50,7 @@ schema = FeatureSchema.load("schemas/user_features_v1.json")
 store.register_schema(schema, overwrite=True)
 store.ingest_csv("user_features", "1", "examples/user_features.csv")
 store.materialize("user_features", "1")
-print(store.get_online_features("user_features", "1", ["u1", "u2"]))
+print(store.get_online_features("user_features", "1", ["u1", "u2"]).to_dict())
 ```
 
 ## Tests
@@ -69,6 +70,30 @@ examples/          # sample CSV
 tests/             # pytest
 ci/github-actions.yml  # CI workflow mirror (copy to .github/workflows/ci.yml if token has workflow scope)
 ```
+
+## Toy online TTL (expire-on-read)
+
+Optional schema field `online_ttl_seconds` + `materialized_at` stamp on materialize:
+
+- `materialize` writes an ISO-UTC `materialized_at` on every online row
+- `get_online_features` **drops** entities whose age exceeds the TTL and reports `expired` count
+- Example: `OnlineFeaturesResult(features={...}, expired=2)`
+
+```python
+schema = FeatureSchema(
+    name="user_features",
+    version="1",
+    entity_key="user_id",
+    features=("avg_order_value", "orders_30d", "is_premium"),
+    online_ttl_seconds=60,  # optional
+)
+```
+
+**Honesty vs Feast TTL:** this demo TTL means “discard stale online rows on read.”
+Real Feast `FeatureView.ttl` semantics are subtler (historical lookback / materialize
+windows; see [feast#4133](https://github.com/feast-dev/feast/issues/4133)). This is
+**not** Redis `EXPIRE`, not Feast `key_ttl_seconds`, and not offline point-in-time joins.
+OSS/learning only — not employer production.
 
 ## Design notes (learning)
 

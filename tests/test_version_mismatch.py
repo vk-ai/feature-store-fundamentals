@@ -81,5 +81,5 @@ def test_register_second_version_and_isolate(store: FeatureStore, tmp_path: Path
     )
     store.register_schema(v2)
     # v1 still works; v2 has no online data yet
-    assert store.get_online_features("user_features", "1", ["u1"])["u1"] is not None
-    assert store.get_online_features("user_features", "2", ["u1"])["u1"] is None
+    assert store.get_online_features("user_features", "1", ["u1"]).features["u1"] is not None
+    assert store.get_online_features("user_features", "2", ["u1"]).features["u1"] is None
