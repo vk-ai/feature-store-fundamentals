@@ -81,5 +81,54 @@ class FeatureStore:
         features, expired = self.online.get(schema, entity_ids, now=now)
         return OnlineFeaturesResult(features=features, expired=expired)
 
+
+    def get_historical_features(
+        self,
+        name: str,
+        version: str,
+        entity_rows: list[dict[str, Any]],
+        *,
+        as_of_known_time: bool = False,
+    ) -> list[dict[str, Any]]:
+        """
+        Toy point-in-time / as-of join for an entity dataframe.
+
+        Each ``entity_rows`` dict needs ``schema.entity_key`` + ``event_timestamp``.
+        Offline rows should include ``event_timestamp`` and (for leak demos)
+        ``created_timestamp``.
+
+        When ``as_of_known_time`` is False (default): filter only by event time
+        (can leak features whose ``created_timestamp`` is after the entity time).
+        When True: also require ``created_timestamp <= entity.event_timestamp``.
+
+        Teaching stub only — not Feast ``get_historical_features`` / ASOF SQL.
+        Real Feast: ``filter_by_created_timestamp`` (v0.66+, feast#6615/#6617).
+        """
+        from feature_store.offline import _coerce
+        from feature_store.pit import asof_join
+
+        schema = self.schemas.get(name, version)
+        raw_rows = self.offline.read_rows(schema)
+        feature_rows: list[dict[str, Any]] = []
+        for row in raw_rows:
+            coerced = {
+                schema.entity_key: str(row[schema.entity_key]),
+            }
+            for f in schema.features:
+                coerced[f] = _coerce(row.get(f), schema.dtypes.get(f, "str"))
+            if "event_timestamp" in row:
+                coerced["event_timestamp"] = row["event_timestamp"]
+            if "created_timestamp" in row:
+                coerced["created_timestamp"] = row["created_timestamp"]
+            feature_rows.append(coerced)
+        joined = asof_join(
+            entity_rows,
+            feature_rows,
+            entity_key=schema.entity_key,
+            feature_names=schema.features,
+            as_of_known_time=as_of_known_time,
+        )
+        return joined
+
     def list_schemas(self, name: str | None = None) -> list[FeatureSchema]:
         return self.schemas.list_versions(name)

@@ -56,6 +56,23 @@ def cmd_get(args: argparse.Namespace) -> int:
     return 0
 
 
+
+def cmd_get_historical(args: argparse.Namespace) -> int:
+    """Join entity CSV against offline features (optional created-time as-of)."""
+    import csv
+
+    store = _store(args)
+    with Path(args.entity_csv).open(newline="", encoding="utf-8") as fh:
+        entity_rows = list(csv.DictReader(fh))
+    rows = store.get_historical_features(
+        args.name,
+        args.version,
+        entity_rows,
+        as_of_known_time=bool(args.as_of_known_time),
+    )
+    print(json.dumps({"as_of_known_time": bool(args.as_of_known_time), "rows": rows}, indent=2, default=str))
+    return 0
+
 def cmd_list(args: argparse.Namespace) -> int:
     store = _store(args)
     for schema in store.list_schemas(args.name):
@@ -112,6 +129,21 @@ def build_parser() -> argparse.ArgumentParser:
     l = sub.add_parser("list-schemas", help="List registered schemas")
     l.add_argument("--name", default=None)
     l.set_defaults(func=cmd_list)
+
+
+    h = sub.add_parser(
+        "get-historical-features",
+        help="Toy PIT / as-of join (entity CSV × offline); not Feast ASOF",
+    )
+    h.add_argument("--name", required=True)
+    h.add_argument("--version", required=True)
+    h.add_argument("--entity-csv", required=True, type=Path, help="CSV with entity_key + event_timestamp")
+    h.add_argument(
+        "--as-of-known-time",
+        action="store_true",
+        help="Also require created_timestamp <= entity event_timestamp (leak-free mode)",
+    )
+    h.set_defaults(func=cmd_get_historical)
 
     return p
 
