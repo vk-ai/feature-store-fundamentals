@@ -5,6 +5,7 @@ Not employer production software.
 
 from feature_store.schema import FeatureSchema, SchemaRegistry, SchemaMismatchError
 from feature_store.store import FeatureStore, OnlineFeaturesResult
+from feature_store.pit import asof_join, asof_join_row
 
 __all__ = [
     "FeatureSchema",
@@ -12,5 +13,7 @@ __all__ = [
     "SchemaMismatchError",
     "FeatureStore",
     "OnlineFeaturesResult",
+    "asof_join",
+    "asof_join_row",
 ]
 __version__ = "0.1.0"

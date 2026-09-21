@@ -95,6 +95,32 @@ windows; see [feast#4133](https://github.com/feast-dev/feast/issues/4133)). This
 **not** Redis `EXPIRE`, not Feast `key_ttl_seconds`, and not offline point-in-time joins.
 OSS/learning only — not employer production.
 
+
+## Toy point-in-time / as-of join (created_timestamp)
+
+Offline training joins need more than “latest feature before event time.” If a row’s
+**created_timestamp** is after the training example’s timestamp, using it is **label leakage**.
+
+This demo adds:
+
+- Optional CSV columns `event_timestamp` + `created_timestamp` (preserved on ingest)
+- `FeatureStore.get_historical_features(entity_rows, as_of_known_time=...)`
+- CLI: `feature-store get-historical-features ... [--as-of-known-time]`
+- Fixture: `examples/user_features_pit.csv` (deliberate leak) + `examples/entity_df_pit.csv`
+
+```text
+entity @ T=11:00
+  feature A  event=10:00  created=09:00  → eligible always
+  feature B  event=10:00  created=12:00  → eligible if event-time only (LEAK)
+                                         → dropped if --as-of-known-time
+```
+
+**Honesty vs Feast:** real Feast supports `filter_by_created_timestamp`
+([feast#6615](https://github.com/feast-dev/feast/issues/6615) /
+[#6617](https://github.com/feast-dev/feast/pull/6617), v0.66+). This repo is a
+**pandas mental-model stub** (stdlib CSV/SQLite) — not Feast SQL templates, not
+streaming watermarks, not employer production. Online TTL from Round 1 is unchanged.
+
 ## Design notes (learning)
 
 1. **Offline** holds historical / batch features (CSV → SQLite).
