@@ -14,6 +14,7 @@ A minimal, CPU-only Python package (stdlib runtime: `sqlite3`, `csv`, `json`) th
 | Materialization | `materialize` copies offline → online (stamps `materialized_at`) |
 | Toy online TTL | Optional `online_ttl_seconds`; expire-on-read + `expired` count |
 | Serving API / CLI | `get_online_features` / `feature-store get-online-features` |
+| Online↔offline parity | `check_parity` / `feature-store check-parity` + JSON report |
 
 No Feast dependency, no GPU, no heavy ML stack.
 
@@ -133,6 +134,34 @@ This mirrors ideas popularized by Feast and similar stores, stripped down for te
 ## CI
 
 A GitHub Actions workflow is checked in as [`ci/github-actions.yml`](ci/github-actions.yml) (mirror). Enabling it under `.github/workflows/` requires a token with the `workflow` scope.
+
+
+## Online ↔ offline sampled parity check
+
+Schema-only validate is **not** enough. After materialize, sample entity keys and
+compare online KV values to the offline table (per-feature equality within
+`rtol`/`atol`, null mismatches, missing keys). Emit `parity_report.json`.
+
+```bash
+feature-store --root data --schema-dir schemas check-parity \
+  --name user_features --version 1 --entities u1 u2 \
+  --report parity_report.json
+```
+
+```python
+report = store.check_parity("user_features", "1", ["u1", "u2"])
+assert report.passed
+report.write_json("parity_report.json")
+```
+
+Intentional skew (tests): mutate online after materialize → `passed=False` with
+per-feature abs/rel error.
+
+> **Honesty:** Feast `validate` is schema/connectivity — **value parity is always
+> custom**. This toy store teaches the contract; it is not Feast, Redis, Spark, or
+> production skew monitoring. Refs: [Neural Base offline-online mismatch](https://theneuralbase.com/feature-store/learn/beginner/offline-online-mismatch/),
+> [LabHub Feast ops / parity rate](https://www.youngju.dev/blog/ai-platform/2026-03-07-ai-platform-feast-feature-store-real-time-serving.en),
+> [feature-store-skew pytest demo](https://github.com/vishnup22/feature-store-skew).
 
 ## License
 

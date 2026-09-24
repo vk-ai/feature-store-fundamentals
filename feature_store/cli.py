@@ -1,4 +1,4 @@
-"""CLI: register, ingest, materialize, get-online-features."""
+"""CLI: register, ingest, materialize, get-online-features, check-parity."""
 
 from __future__ import annotations
 
@@ -73,6 +73,23 @@ def cmd_get_historical(args: argparse.Namespace) -> int:
     print(json.dumps({"as_of_known_time": bool(args.as_of_known_time), "rows": rows}, indent=2, default=str))
     return 0
 
+
+def cmd_check_parity(args: argparse.Namespace) -> int:
+    """Compare online vs offline values for sampled entities; write optional report."""
+    store = _store(args)
+    report = store.check_parity(
+        args.name,
+        args.version,
+        args.entities,
+        rtol=args.rtol,
+        atol=args.atol,
+    )
+    if args.report:
+        out = report.write_json(args.report)
+        print(f"Wrote parity report -> {out}")
+    print(json.dumps(report.to_dict(), indent=2, default=str))
+    return 0 if report.passed else 1
+
 def cmd_list(args: argparse.Namespace) -> int:
     store = _store(args)
     for schema in store.list_schemas(args.name):
@@ -144,6 +161,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also require created_timestamp <= entity event_timestamp (leak-free mode)",
     )
     h.set_defaults(func=cmd_get_historical)
+
+
+    cp = sub.add_parser(
+        "check-parity",
+        help="Online↔offline sampled value parity (not schema-only validate)",
+    )
+    cp.add_argument("--name", required=True)
+    cp.add_argument("--version", required=True)
+    cp.add_argument("--entities", nargs="+", required=True)
+    cp.add_argument("--rtol", type=float, default=1e-5)
+    cp.add_argument("--atol", type=float, default=1e-8)
+    cp.add_argument("--report", type=Path, default=None, help="Write JSON report path")
+    cp.set_defaults(func=cmd_check_parity)
 
     return p
 
