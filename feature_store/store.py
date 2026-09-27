@@ -130,5 +130,20 @@ class FeatureStore:
         )
         return joined
 
+
+    def check_parity(
+        self,
+        name: str,
+        version: str,
+        entity_ids: list[str],
+        *,
+        rtol: float = 1e-5,
+        atol: float = 1e-8,
+    ):
+        """Sampled online↔offline value parity (see ``feature_store.parity``)."""
+        from feature_store.parity import check_parity
+
+        return check_parity(self, name, version, entity_ids, rtol=rtol, atol=atol)
+
     def list_schemas(self, name: str | None = None) -> list[FeatureSchema]:
         return self.schemas.list_versions(name)
