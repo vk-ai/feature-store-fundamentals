@@ -1,4 +1,4 @@
-"""CLI: register, ingest, materialize, get-online-features, check-parity."""
+"""CLI: register, ingest, materialize, get-online-features, check-parity (+ --transforms)."""
 
 from __future__ import annotations
 
@@ -9,10 +9,24 @@ from pathlib import Path
 
 from feature_store.schema import FeatureSchema, SchemaMismatchError
 from feature_store.store import FeatureStore
+from feature_store.transforms import MissingRequestDataError, load_transforms_file
 
 
 def _store(args: argparse.Namespace) -> FeatureStore:
-    return FeatureStore(root=args.root, schema_dir=args.schema_dir)
+    store = FeatureStore(root=args.root, schema_dir=args.schema_dir)
+    transforms_file = getattr(args, "transforms", None)
+    if transforms_file:
+        load_transforms_file(store, transforms_file)
+    return store
+
+
+def _add_transforms_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--transforms",
+        type=Path,
+        default=None,
+        help="Python file defining register_transforms(store) (request-time transforms)",
+    )
 
 
 def cmd_register(args: argparse.Namespace) -> int:
@@ -47,10 +61,16 @@ def cmd_materialize(args: argparse.Namespace) -> int:
 
 def cmd_get(args: argparse.Namespace) -> int:
     store = _store(args)
+    request_data = json.loads(args.request_json) if args.request_json else None
     try:
-        result = store.get_online_features(args.name, args.version, args.entities)
+        result = store.get_online_features(
+            args.name, args.version, args.entities, request_data=request_data
+        )
     except SchemaMismatchError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    except MissingRequestDataError as exc:
+        print(f"ERROR: {exc.args[0]} (pass --request-json)", file=sys.stderr)
         return 2
     print(json.dumps(result.to_dict(), indent=2, default=str))
     return 0
@@ -135,12 +155,19 @@ def build_parser() -> argparse.ArgumentParser:
     m = sub.add_parser("materialize", help="Materialize offline -> online")
     m.add_argument("--name", required=True)
     m.add_argument("--version", required=True)
+    _add_transforms_arg(m)
     m.set_defaults(func=cmd_materialize)
 
     g = sub.add_parser("get-online-features", help="Lookup online features by entity id")
     g.add_argument("--name", required=True)
     g.add_argument("--version", required=True)
     g.add_argument("--entities", nargs="+", required=True)
+    _add_transforms_arg(g)
+    g.add_argument(
+        "--request-json",
+        default=None,
+        help='Request-time data for on_read transforms, e.g. \'{"cart_value": 50}\'',
+    )
     g.set_defaults(func=cmd_get)
 
     l = sub.add_parser("list-schemas", help="List registered schemas")
@@ -160,6 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Also require created_timestamp <= entity event_timestamp (leak-free mode)",
     )
+    _add_transforms_arg(h)
     h.set_defaults(func=cmd_get_historical)
 
 

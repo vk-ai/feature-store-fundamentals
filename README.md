@@ -15,6 +15,7 @@ A minimal, CPU-only Python package (stdlib runtime: `sqlite3`, `csv`, `json`) th
 | Toy online TTL | Optional `online_ttl_seconds`; expire-on-read + `expired` count |
 | Serving API / CLI | `get_online_features` / `feature-store get-online-features` |
 | Online↔offline parity | `check_parity` / `feature-store check-parity` + JSON report |
+| Request-time transforms | `register_transform(mode="on_read" / "on_write")`: one fn for historical + online; `check_transform_parity` |
 
 No Feast dependency, no GPU, no heavy ML stack.
 
@@ -65,9 +66,9 @@ Coverage includes successful online lookup after materialize and schema / versio
 ## Layout
 
 ```
-feature_store/     # schema, offline, online, store, cli
+feature_store/     # schema, offline, online, store, transforms, cli
 schemas/           # example feature-view JSON
-examples/          # sample CSV
+examples/          # sample CSVs + transforms_demo.py
 tests/             # pytest
 ci/github-actions.yml  # CI workflow mirror (copy to .github/workflows/ci.yml if token has workflow scope)
 ```
@@ -162,6 +163,45 @@ per-feature abs/rel error.
 > production skew monitoring. Refs: [Neural Base offline-online mismatch](https://theneuralbase.com/feature-store/learn/beginner/offline-online-mismatch/),
 > [LabHub Feast ops / parity rate](https://www.youngju.dev/blog/ai-platform/2026-03-07-ai-platform-feast-feature-store-real-time-serving.en),
 > [feature-store-skew pytest demo](https://github.com/vishnup22/feature-store-skew).
+
+## Request-time transforms: on-read vs on-write
+
+Storage, TTL, PIT, and parity leave one fundamental open: **where does feature logic run?** A transform derives features from stored features, and optionally from **request data** that only exists at serving time (e.g. `cart_value`). The same Python function feeds both the historical path and the online path.
+
+| `mode` | Runs in | Can use request data? | Trade-off |
+|---|---|---|---|
+| `on_read` (default) | `get_online_features(..., request_data=…)` **and** `get_historical_features(entity_rows)` | yes | always fresh; compute on every read |
+| `on_write` | `materialize` (outputs stored online) **and** `get_historical_features` | **no**: there is no request at materialize time, so registering one with `request_schema` raises `TransformError` | cheap reads; values only as fresh as the last materialize |
+
+```python
+store.register_transform(
+    "cart_to_aov_ratio",
+    feature_view="user_features", version="1",
+    inputs=["avg_order_value"], request_schema={"cart_value": "float"},
+    outputs=["cart_to_aov_ratio"],
+    fn=lambda r: {"cart_to_aov_ratio": round(r["cart_value"] / r["avg_order_value"], 4)},
+    mode="on_read",
+)
+store.get_online_features("user_features", "1", ["u1"], request_data={"cart_value": 85})
+store.get_historical_features("user_features", "1", entity_rows)  # rows carry cart_value
+```
+
+Both paths go through one helper, `apply_transform`, which also owns request dtype coercion and the rule "null in → null out" (no stored row → outputs `None`). `check_transform_parity(store, name, version, entity_rows)` compares historical vs online transform outputs and returns the same `ParityReport` shape as `check_parity`. `store.transforms.stats` shows where compute happened (`on_read_rows` vs `on_write_rows`).
+
+```bash
+feature-store --root data --schema-dir schemas ingest --name user_features --version 1 --csv examples/user_features_ts.csv
+feature-store --root data --schema-dir schemas materialize --name user_features --version 1 \
+  --transforms examples/transforms_demo.py            # on_write: orders_per_week stored online
+feature-store --root data --schema-dir schemas get-online-features --name user_features --version 1 \
+  --entities u1 --transforms examples/transforms_demo.py --request-json '{"cart_value": 85}'
+feature-store --root data --schema-dir schemas get-historical-features --name user_features --version 1 \
+  --entity-csv examples/entity_df_request.csv --transforms examples/transforms_demo.py
+pytest tests/test_transforms.py -q
+```
+
+Transforms are Python code, so they are registered at process start (CLI: `--transforms file.py` defining `register_transforms(store)`) rather than persisted to JSON. Re-run `materialize` after changing an `on_write` transform.
+
+> **Honesty:** a stdlib mental model of Feast `@on_demand_feature_view` / `write_to_online_store`. It is not Feast, not Tecton, and has no pandas/Substrait execution. The motivation is the [Feast blog on on-write transforms](https://feast.dev/blog/feature-transformation-latency/), [feast#4584](https://github.com/feast-dev/feast/issues/4584) (making transform timing explicit), and [feast#4376](https://github.com/feast-dev/feast/issues/4376). OSS/learning only, not employer production.
 
 ## License
 

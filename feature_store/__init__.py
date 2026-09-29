@@ -6,6 +6,13 @@ Not employer production software.
 from feature_store.schema import FeatureSchema, SchemaRegistry, SchemaMismatchError
 from feature_store.store import FeatureStore, OnlineFeaturesResult
 from feature_store.pit import asof_join, asof_join_row
+from feature_store.transforms import (
+    MissingRequestDataError,
+    Transform,
+    TransformError,
+    apply_transform,
+    check_transform_parity,
+)
 
 __all__ = [
     "FeatureSchema",
@@ -15,5 +22,10 @@ __all__ = [
     "OnlineFeaturesResult",
     "asof_join",
     "asof_join_row",
+    "Transform",
+    "TransformError",
+    "MissingRequestDataError",
+    "apply_transform",
+    "check_transform_parity",
 ]
 __version__ = "0.1.0"
