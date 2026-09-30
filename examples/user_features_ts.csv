@@ -1,0 +1,5 @@
+user_id,avg_order_value,orders_30d,is_premium,event_timestamp
+u1,42.5,3,true,2026-01-01T10:00:00Z
+u2,19.0,1,false,2026-01-01T10:00:00Z
+u3,87.25,8,true,2026-01-01T10:00:00Z
+u4,0.0,0,false,2026-01-01T10:00:00Z

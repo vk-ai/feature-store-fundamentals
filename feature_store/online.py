@@ -106,8 +106,12 @@ class OnlineStore:
         features: dict[str, Any],
         *,
         materialized_at: str | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> None:
         payload = {f: features.get(f) for f in schema.features}
+        # on_write transform outputs are stored next to the raw features
+        if extra:
+            payload.update(extra)
         mat = materialized_at or _utcnow().isoformat()
         key = (schema.name, schema.version, str(entity_id))
         self._mem[key] = OnlineRecord(features=payload, materialized_at=mat)
