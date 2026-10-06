@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from feature_store.offline import OfflineStore
+from feature_store.freshness import (
+    Freshness,
+    Watermark,
+    WatermarkStore,
+    freshness_for,
+    prometheus_text,
+    to_utc,
+)
+from feature_store.offline import OfflineStore, _coerce
 from feature_store.online import OnlineStore, _utcnow
 from feature_store.schema import FeatureSchema, SchemaMismatchError, SchemaRegistry
 from feature_store.transforms import (
@@ -25,9 +33,40 @@ class OnlineFeaturesResult:
 
     features: dict[str, dict[str, Any] | None]
     expired: int = 0
+    # Seconds since the view's last materialized end (None = never materialized).
+    freshness_seconds: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"features": self.features, "expired": self.expired}
+        return {
+            "features": self.features,
+            "expired": self.expired,
+            "freshness_seconds": self.freshness_seconds,
+        }
+
+
+@dataclass
+class IncrementalMaterializeResult:
+    """What one ``materialize_incremental`` run covered."""
+
+    feature_view: str
+    version: str
+    start: str | None  # exclusive; None = from the beginning (first run)
+    end: str  # inclusive; new watermark
+    rows_in_window: int = 0
+    entities_written: int = 0
+    noop: bool = False
+    entity_ids: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "feature_view": self.feature_view,
+            "version": self.version,
+            "start": self.start,
+            "end": self.end,
+            "rows_in_window": self.rows_in_window,
+            "entities_written": self.entities_written,
+            "noop": self.noop,
+        }
 
 
 class FeatureStore:
@@ -46,6 +85,8 @@ class FeatureStore:
         self.offline = OfflineStore(self.root / "offline")
         online_db = (self.root / "online" / "online.sqlite") if persist_online else None
         self.online = OnlineStore(online_db)
+        # Per-view materialization watermarks live next to the online rows.
+        self.watermarks = WatermarkStore(online_db)
         self.transforms = TransformRegistry()
 
     def register_schema(self, schema: FeatureSchema, overwrite: bool = False) -> Path:
@@ -99,9 +140,11 @@ class FeatureStore:
             stats.on_read_rows += 1
         return out
 
-    def ingest_csv(self, name: str, version: str, csv_path: Path | str) -> int:
+    def ingest_csv(
+        self, name: str, version: str, csv_path: Path | str, *, append: bool = False
+    ) -> int:
         schema = self.schemas.get(name, version)
-        return self.offline.ingest_csv(schema, csv_path)
+        return self.offline.ingest_csv(schema, csv_path, append=append)
 
     def materialize(
         self,
@@ -129,7 +172,112 @@ class FeatureStore:
                 schema, entity_id, features, materialized_at=stamp, extra=derived or None
             )
             count += 1
+        # A full copy covers everything up to the stamp: record it as the watermark
+        # so a following incremental run only picks up newer event rows.
+        self.watermarks.set(
+            Watermark(name, version, stamp, _utcnow().isoformat(), mode="full")
+        )
         return count
+
+    def materialize_incremental(
+        self,
+        name: str,
+        version: str,
+        *,
+        end: datetime | str | None = None,
+        now: datetime | None = None,
+        materialized_at: str | None = None,
+    ) -> IncrementalMaterializeResult:
+        """Upsert only offline rows with ``watermark < event_timestamp <= end``.
+
+        - ``end`` defaults to ``now``. An ``end`` in the **future** is rejected:
+          advancing the watermark past now would silently skip rows that arrive
+          later (the classic Feast incremental trap, feast#4222).
+        - First run (no watermark) covers everything up to ``end``.
+        - Per entity, the row with the latest ``event_timestamp`` in the window
+          wins. Entities with no new rows keep their existing online value.
+        - ``on_write`` transforms run for written entities, as in ``materialize``.
+        - The watermark only moves forward; ``end <= watermark`` is a no-op.
+
+        Requires an ``event_timestamp`` column in the offline table.
+        """
+        schema = self.schemas.get(name, version)
+        now_dt = to_utc(now or _utcnow())
+        end_dt = to_utc(end) if end is not None else now_dt
+        if end_dt > now_dt:
+            raise ValueError(
+                f"end={end_dt.isoformat()} is in the future (now={now_dt.isoformat()}); "
+                "refusing to advance the watermark past now"
+            )
+        wm = self.watermarks.get(name, version)
+        start_dt = to_utc(wm.last_materialized_end) if wm else None
+        result = IncrementalMaterializeResult(
+            feature_view=name,
+            version=version,
+            start=start_dt.isoformat() if start_dt else None,
+            end=end_dt.isoformat(),
+        )
+        if start_dt is not None and end_dt <= start_dt:
+            result.noop = True
+            result.end = start_dt.isoformat()
+            return result
+
+        rows = self.offline.read_rows(schema)
+        if rows and "event_timestamp" not in rows[0]:
+            raise ValueError(
+                f"incremental materialize needs an event_timestamp column in {name}@{version}"
+            )
+        latest: dict[str, tuple[datetime, dict[str, Any]]] = {}
+        for row in rows:
+            raw_ts = row.get("event_timestamp")
+            if not raw_ts:
+                continue
+            ts = to_utc(raw_ts)
+            if (start_dt is not None and ts <= start_dt) or ts > end_dt:
+                continue
+            result.rows_in_window += 1
+            eid = str(row[schema.entity_key])
+            if eid not in latest or ts >= latest[eid][0]:
+                latest[eid] = (ts, row)
+
+        write_transforms = self.transforms.for_view(name, version, mode="on_write")
+        stamp = materialized_at or now_dt.isoformat()
+        for eid, (_, row) in latest.items():
+            feats = {f: _coerce(row.get(f), schema.dtypes.get(f, "str")) for f in schema.features}
+            derived: dict[str, Any] = {}
+            for t in write_transforms:
+                derived.update(self._apply(t, feats, None, at="write"))
+            self.online.put(schema, eid, feats, materialized_at=stamp, extra=derived or None)
+            result.entity_ids.append(eid)
+        result.entities_written = len(latest)
+        self.watermarks.set(
+            Watermark(name, version, end_dt.isoformat(), now_dt.isoformat(), mode="incremental")
+        )
+        return result
+
+    def freshness(
+        self,
+        name: str,
+        version: str,
+        *,
+        now: datetime | None = None,
+        max_staleness_seconds: float | None = None,
+    ) -> Freshness:
+        """How stale the online store is for a view: ``now - last_materialized_end``."""
+        self.schemas.get(name, version)
+        return freshness_for(
+            self.watermarks.get(name, version),
+            name,
+            version,
+            now=now,
+            max_staleness_seconds=max_staleness_seconds,
+        )
+
+    def freshness_metrics(self, *, now: datetime | None = None) -> str:
+        """Prometheus text gauge for every registered view (NaN = never materialized)."""
+        return prometheus_text(
+            self.freshness(s.name, s.version, now=now) for s in self.list_schemas()
+        )
 
     def get_online_features(
         self,
@@ -159,7 +307,10 @@ class FeatureStore:
                 req = {**(request_data or {}), **((request_data_by_entity or {}).get(eid) or {})}
                 for t in read_transforms:
                     feats.update(self._apply(t, feats, req, at="read"))
-        return OnlineFeaturesResult(features=features, expired=expired)
+        fresh = freshness_for(self.watermarks.get(name, version), name, version, now=now)
+        return OnlineFeaturesResult(
+            features=features, expired=expired, freshness_seconds=fresh.freshness_seconds
+        )
 
 
     def get_historical_features(

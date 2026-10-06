@@ -31,8 +31,20 @@ class OfflineStore:
         conn.row_factory = sqlite3.Row
         return conn
 
-    def ingest_csv(self, schema: FeatureSchema, csv_path: Path | str, table: str | None = None) -> int:
-        """Load CSV into an offline SQLite table named after the feature view."""
+    def ingest_csv(
+        self,
+        schema: FeatureSchema,
+        csv_path: Path | str,
+        table: str | None = None,
+        *,
+        append: bool = False,
+    ) -> int:
+        """Load CSV into an offline SQLite table named after the feature view.
+
+        Default replaces the table. ``append=True`` adds rows to an existing table
+        (new data arriving for incremental materialize); columns missing from the
+        CSV are stored as NULL.
+        """
         csv_path = Path(csv_path)
         table = table or f"{schema.name}_v{schema.version}"
         with csv_path.open(newline="", encoding="utf-8") as fh:
@@ -42,11 +54,23 @@ class OfflineStore:
             columns = [schema.entity_key, *schema.features, *ts_cols]
             rows = [{c: row.get(c) for c in columns} for row in reader]
 
-        col_defs = ", ".join(f'"{c}" TEXT' for c in columns)
-        placeholders = ", ".join("?" for _ in columns)
         with self._connect() as conn:
-            conn.execute(f'DROP TABLE IF EXISTS "{table}"')
-            conn.execute(f'CREATE TABLE "{table}" ({col_defs})')
+            existing = [
+                r["name"] for r in conn.execute(f'PRAGMA table_info("{table}")').fetchall()
+            ]
+            if append and existing:
+                extra = [c for c in columns if c not in existing]
+                if extra:
+                    raise ValueError(
+                        f"cannot append to {table}: CSV has columns {extra} not in the table"
+                    )
+                columns = existing
+                rows = [{c: r.get(c) for c in columns} for r in rows]
+            else:
+                col_defs = ", ".join(f'"{c}" TEXT' for c in columns)
+                conn.execute(f'DROP TABLE IF EXISTS "{table}"')
+                conn.execute(f'CREATE TABLE "{table}" ({col_defs})')
+            placeholders = ", ".join("?" for _ in columns)
             conn.executemany(
                 f'INSERT INTO "{table}" VALUES ({placeholders})',
                 [tuple(r[c] for c in columns) for r in rows],

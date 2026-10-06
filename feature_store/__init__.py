@@ -4,7 +4,8 @@ Not employer production software.
 """
 
 from feature_store.schema import FeatureSchema, SchemaRegistry, SchemaMismatchError
-from feature_store.store import FeatureStore, OnlineFeaturesResult
+from feature_store.store import FeatureStore, IncrementalMaterializeResult, OnlineFeaturesResult
+from feature_store.freshness import Freshness, Watermark
 from feature_store.pit import asof_join, asof_join_row
 from feature_store.transforms import (
     MissingRequestDataError,
@@ -20,6 +21,9 @@ __all__ = [
     "SchemaMismatchError",
     "FeatureStore",
     "OnlineFeaturesResult",
+    "IncrementalMaterializeResult",
+    "Freshness",
+    "Watermark",
     "asof_join",
     "asof_join_row",
     "Transform",
