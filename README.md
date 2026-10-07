@@ -15,6 +15,7 @@ A minimal, CPU-only Python package (stdlib runtime: `sqlite3`, `csv`, `json`) th
 | Toy online TTL | Optional `online_ttl_seconds`; expire-on-read + `expired` count |
 | Serving API / CLI | `get_online_features` / `feature-store get-online-features` |
 | Online↔offline parity | `check_parity` / `feature-store check-parity` + JSON report |
+| Incremental materialize + freshness | `materialize --incremental` with a stored per-view watermark; `freshness_seconds` + Prometheus gauge |
 | Request-time transforms | `register_transform(mode="on_read" / "on_write")`: one fn for historical + online; `check_transform_parity` |
 
 No Feast dependency, no GPU, no heavy ML stack.
@@ -66,7 +67,7 @@ Coverage includes successful online lookup after materialize and schema / versio
 ## Layout
 
 ```
-feature_store/     # schema, offline, online, store, transforms, cli
+feature_store/     # schema, offline, online, store, transforms, freshness, cli
 schemas/           # example feature-view JSON
 examples/          # sample CSVs + transforms_demo.py
 tests/             # pytest
@@ -127,7 +128,7 @@ streaming watermarks, not employer production. Online TTL from Round 1 is unchan
 
 1. **Offline** holds historical / batch features (CSV → SQLite).
 2. **Online** is optimized for entity-key reads at serving time.
-3. **Materialize** is the bridge: batch job that publishes the latest offline snapshot online.
+3. **Materialize** is the bridge: batch job that publishes the latest offline snapshot online (full, or incremental from a stored watermark).
 4. **Schema versions** let you evolve feature views without silently mixing incompatible payloads; mismatches raise `SchemaMismatchError`.
 
 This mirrors ideas popularized by Feast and similar stores, stripped down for teaching.
@@ -163,6 +164,57 @@ per-feature abs/rel error.
 > production skew monitoring. Refs: [Neural Base offline-online mismatch](https://theneuralbase.com/feature-store/learn/beginner/offline-online-mismatch/),
 > [LabHub Feast ops / parity rate](https://www.youngju.dev/blog/ai-platform/2026-03-07-ai-platform-feast-feature-store-real-time-serving.en),
 > [feature-store-skew pytest demo](https://github.com/vishnup22/feature-store-skew).
+
+## Incremental materialize: watermark + freshness
+
+A full `materialize` re-copies every offline row. `materialize --incremental` copies only rows
+with `watermark < event_timestamp <= end`, upserts them online, and then **advances a stored
+watermark** to `end`. The watermark is kept per feature view, in the
+`materialization_watermarks` table next to the online rows, so the next run (even from another
+process) continues from there.
+
+```bash
+# day 1: rows at 2026-01-01T10:00Z
+feature-store --root data --schema-dir schemas ingest --name user_features --version 1 --csv examples/user_features_ts.csv
+feature-store --root data --schema-dir schemas materialize --name user_features --version 1 --incremental --end 2026-01-01T12:00:00Z
+# day 2: new rows arrive (append), only u1/u3/u5 are rewritten
+feature-store --root data --schema-dir schemas ingest --name user_features --version 1 --csv examples/user_features_day2.csv --append
+feature-store --root data --schema-dir schemas materialize --name user_features --version 1 --incremental --end 2026-01-02T12:00:00Z
+# how stale is online?  exit 1 if over the bound (or never materialized)
+feature-store --root data --schema-dir schemas freshness --name user_features --max-staleness-seconds 3600
+feature-store --root data --schema-dir schemas freshness --prometheus
+```
+
+Rules the code and tests pin:
+
+- `end` defaults to now. **A future `end` is rejected** (exit 2): moving the watermark past now
+  would silently skip rows that arrive later. This is the classic incremental trap from
+  [feast#4222](https://github.com/feast-dev/feast/issues/4222).
+- The window is start-exclusive and end-inclusive. Per entity, the latest `event_timestamp` in the
+  window wins. Entities with no new rows keep their online value. `on_write` transforms run as
+  usual. The watermark never moves backwards: `end <= watermark` is a no-op.
+- A full `materialize` also records its stamp as the watermark, so incremental runs can follow it.
+
+**Freshness** = `now - last_materialized_end`: how far online lags the offline source. It is
+returned by `store.freshness(...)`, as `freshness_seconds` on every `get_online_features`
+result, and as a Prometheus gauge:
+
+```text
+# TYPE feature_store_feature_freshness_seconds gauge
+feature_store_feature_freshness_seconds{feature_view="user_features",version="1"} 43200.0
+```
+
+Never-materialized views report `NaN` (a gap), not `0`. Freshness is about the *view*;
+the Round-1 TTL is about individual rows. Note that incremental runs only re-stamp the entities
+they write, so unchanged entities can still TTL-expire.
+
+> **Honesty:** a stdlib re-implementation of the *idea* behind Feast's `materialize-incremental`
+> and its `feast_feature_freshness_seconds` gauge
+> ([feast commit 2c6be18](https://github.com/feast-dev/feast/commit/2c6be18bfee9d4bf18ae59490160282b090d3b62)).
+> It has no scheduler, no locking, and no windowed/chunked backfill
+> ([feast#6307](https://github.com/feast-dev/feast/issues/6307) is the OOM story that motivates
+> chunking). Late-arriving rows (`event_timestamp <= watermark`) are not picked up by later
+> incremental runs; use a full `materialize` for those. Not employer production.
 
 ## Request-time transforms: on-read vs on-write
 
